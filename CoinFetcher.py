@@ -1,8 +1,10 @@
+from influxdb.exceptions import InfluxDBClientError
+
 from Coin import CoinInfo, BuiltInCoin
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from CMCBrowserUtils import getBrowser, WebDriverWait, EC, By
 import requests, json
-from InfluxDBService import insertData, queryToPoints
+from InfluxDBService import insertData, queryToPoints, deleteByTags
 import dateutil.parser
 import Config
 from dto.QuoteDto import Point
@@ -27,10 +29,15 @@ class CoinFetcher:
     def getInitAt(self):
         queryTemp = 'SELECT * FROM "quote" WHERE "category"=\'{0}\' AND "name" = \'{1}\'   ORDER BY time ASC LIMIT 1'
         qstr = queryTemp.format("cryptocurrency", self.info.name)
-        points = queryToPoints(qstr, measurement)
-        if len(points) <= 0:
-            return dateutil.parser.parse(Config.env("coinmarketcap.init.time"))
-        return dateutil.parser.parse(points[0]['time'])
+        try:
+            points = queryToPoints(qstr, measurement)
+            if len(points) <= 0:
+                return dateutil.parser.parse(Config.env("coinmarketcap.init.time"))
+        except InfluxDBClientError:
+            pass
+        lAt: datetime = dateutil.parser.parse(points[0]['time'])
+        # lAt = lAt + timedelta(days=1)
+        return lAt
 
     def saveUntilNow(self):
         sAt = self.getInitAt()
@@ -41,6 +48,11 @@ class CoinFetcher:
         idata = self.parseHistorical(s, e)
         iList = [self.toPoint(q) for q in idata]
         insertData(iList)
+
+    def deleteAll(self):
+        deleteByTags(measurement=measurement, tags={
+            "name": self.info.name
+        })
 
     def toPoint(self, q):
         # {
@@ -73,12 +85,12 @@ class CoinFetcher:
                           "time_close": q['time_close'],
                           "time_high": q['time_high'],
                           "time_low": q['time_low'],
-                          "open": vals['open'],
-                          "high": vals['high'],
-                          "low": vals['low'],
-                          "close": vals['close'],
-                          "volume": vals['volume'],
-                          "market_cap": vals['market_cap'],
+                          "open": toFloat(vals['open']),
+                          "high": toFloat(vals['high']),
+                          "low": toFloat(vals['low']),
+                          "close": toFloat(vals['close']),
+                          "volume": toFloat(vals['volume']),
+                          "market_cap": toFloat(vals['market_cap']),
                       },
                       time=tt,
                       source='coinmarketcap'
@@ -86,14 +98,19 @@ class CoinFetcher:
         return point
 
 
+def toFloat(i):
+    ans = float(i)
+    return ans
+
+
 if __name__ == '__main__':
     import unittest
 
 
     class SymbolTest(unittest.TestCase):
-        def test_saveInfluxDB(self):
+        def test_saveUntilNow(self):
             cf = CoinFetcher(BuiltInCoin.BTC.getCoinInfo())
-            cf.saveInfluxDB(datetime(2021, 3, 3), datetime.now())
+            cf.saveUntilNow()
             print(cf)
             self.assertIsNotNone(cf)
 
@@ -105,7 +122,7 @@ if __name__ == '__main__':
 
 
     tests = [
-        # SymbolTest('test_saveInfluxDB'),
+        SymbolTest('test_saveUntilNow'),
         SymbolTest('test_getInitAt'),
 
     ]
